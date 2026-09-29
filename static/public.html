@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Driver Licence Checker</title>
+  <title>Taxi Licensing Public Registers</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -11,16 +11,36 @@
     <div class="brand"><span class="crest">DC</span> District Council · Taxi &amp; Private Hire Licensing</div>
   </header>
 
-  <main class="narrow stack">
+  <nav class="tabs" aria-label="Public registers">
+    <a href="/drivers" id="tab-drivers">Driver register</a>
+    <a href="/vehicles" id="tab-vehicles">Vehicle register</a>
+  </nav>
+
+  <main class="narrow stack" id="home" hidden>
     <div>
-      <h1>Check a driver's licence</h1>
-      <p class="lede">For operators and members of the public. Enter the licence number shown on the driver's badge to confirm they currently hold a valid licence with this council.</p>
+      <h1>Public licensing registers</h1>
+      <p class="lede">For operators and members of the public. Check that a taxi or private hire driver or vehicle currently holds a valid licence with this council.</p>
+    </div>
+    <a class="choice card" href="/drivers">
+      <h2>Check a driver →</h2>
+      <p class="small">Enter the licence number shown on the driver's badge.</p>
+    </a>
+    <a class="choice card" href="/vehicles">
+      <h2>Check a vehicle →</h2>
+      <p class="small">Enter the vehicle registration or the council plate number.</p>
+    </a>
+  </main>
+
+  <main class="narrow stack" id="checker" hidden>
+    <div>
+      <h1 id="title"></h1>
+      <p class="lede" id="lede"></p>
     </div>
 
     <form id="check-form" class="card">
-      <label for="licence">Licence / badge number</label>
+      <label for="q" id="q-label"></label>
       <div class="row">
-        <input id="licence" name="licence" placeholder="e.g. PH-10421" autocomplete="off" required>
+        <input id="q" name="q" autocomplete="off" required>
         <button type="submit">Check</button>
       </div>
       <p class="error" id="form-error"></p>
@@ -28,48 +48,83 @@
 
     <div id="result" aria-live="polite"></div>
 
-    <p class="small">If a driver is not shown as licensed, do not allow them to carry passengers. Contact the licensing team if you believe this is an error.</p>
+    <p class="small" id="footnote"></p>
   </main>
 
   <script>
-    const form = document.getElementById('check-form');
-    const input = document.getElementById('licence');
-    const result = document.getElementById('result');
-    const formError = document.getElementById('form-error');
-
-    const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const $ = id => document.getElementById(id);
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
     const fmtDate = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
     const fmtTime = iso => new Date(iso).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
 
-    form.addEventListener('submit', async e => {
-      e.preventDefault();
-      formError.textContent = '';
-      result.innerHTML = '';
-      const res = await fetch('/api/public/check?licence=' + encodeURIComponent(input.value));
-      const data = await res.json();
-      if (!res.ok) { formError.textContent = data.error; return; }
+    const REGISTERS = {
+      drivers: {
+        title: "Check a driver's licence",
+        lede: "Enter the licence number shown on the driver's badge to confirm they currently hold a valid licence with this council.",
+        label: 'Licence / badge number', placeholder: 'e.g. PH-10421',
+        found: '✓ Licensed driver', notFound: 'No valid driver licence found',
+        details: d => [
+          ['Name', d.full_name],
+          ['Licence number', d.licence_number],
+          ['Licence type', d.licence_type],
+          ['Valid until', fmtDate(d.expiry_date)],
+        ],
+        footnote: 'If a driver is not shown as licensed, do not allow them to carry passengers. Contact the licensing team if you believe this is an error.',
+      },
+      vehicles: {
+        title: 'Check a vehicle licence',
+        lede: 'Enter the vehicle registration or the council plate number shown on the licence plate to confirm the vehicle is currently licensed with this council.',
+        label: 'Registration or plate number', placeholder: 'e.g. KX21 LMR or PHV-0412',
+        found: '✓ Licensed vehicle', notFound: 'No valid vehicle licence found',
+        details: v => [
+          ['Registration', v.registration],
+          ['Plate number', v.plate_number],
+          ['Make & model', `${v.make} ${v.model}`],
+          ['Colour', v.colour || '—'],
+          ['Licence type', v.licence_type],
+          ['Licence valid until', fmtDate(v.licence_expiry)],
+          ['Test certificate valid until', fmtDate(v.test_expiry)],
+        ],
+        footnote: 'Check the registration and plate on the vehicle match these details. If a vehicle is not shown as licensed, it must not be used to carry passengers. Contact the licensing team if you believe this is an error.',
+      },
+    };
 
-      if (data.licensed) {
-        const d = data.driver;
-        result.innerHTML = `
-          <div class="result ok">
-            <h2>✓ Licensed driver</h2>
-            <dl>
-              <dt>Name</dt><dd>${esc(d.full_name)}</dd>
-              <dt>Licence number</dt><dd>${esc(d.licence_number)}</dd>
-              <dt>Licence type</dt><dd>${esc(d.licence_type)}</dd>
-              <dt>Valid until</dt><dd>${fmtDate(d.expiry_date)}</dd>
-            </dl>
-            <p class="small">Checked ${fmtTime(data.checked_at)}</p>
-          </div>`;
-      } else {
-        result.innerHTML = `
-          <div class="result bad">
-            <h2>✗ No valid licence found</h2>
-            <p>There is no current licence for <strong>${esc(data.licence_number)}</strong>. Check the number has been entered correctly.</p>
-            <p class="small">Checked ${fmtTime(data.checked_at)}</p>
-          </div>`;
-      }
+    const kind = location.pathname.slice(1);
+    const R = REGISTERS[kind];
+
+    if (!R) {
+      $('home').hidden = false;
+    } else {
+      $('tab-' + kind).classList.add('current');
+      $('tab-' + kind).setAttribute('aria-current', 'page');
+      document.title = `${R.title} · District Council`;
+      $('title').textContent = R.title;
+      $('lede').textContent = R.lede;
+      $('q-label').textContent = R.label;
+      $('q').placeholder = R.placeholder;
+      $('footnote').textContent = R.footnote;
+      $('checker').hidden = false;
+    }
+
+    $('check-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      $('form-error').textContent = '';
+      $('result').innerHTML = '';
+      const res = await fetch(`/api/public/${kind}?q=` + encodeURIComponent($('q').value));
+      const data = await res.json();
+      if (!res.ok) { $('form-error').textContent = data.error; return; }
+
+      $('result').innerHTML = data.licensed ? `
+        <div class="result ok">
+          <h2>${R.found}</h2>
+          <dl>${R.details(data.record).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>
+          <p class="small">Checked ${fmtTime(data.checked_at)}</p>
+        </div>` : `
+        <div class="result bad">
+          <h2>✗ ${R.notFound}</h2>
+          <p>There is no current licence for <strong>${esc(data.entered)}</strong>. Check it has been entered correctly.</p>
+          <p class="small">Checked ${fmtTime(data.checked_at)}</p>
+        </div>`;
     });
   </script>
 </body>

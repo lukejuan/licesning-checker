@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Licensing Staff Accounts</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar" id="topbar"></header>
+
+  <main>
+    <div class="layout">
+      <section class="card">
+        <div class="toolbar">
+          <div>
+            <h1 style="font-size:1.3rem;margin:0">Staff accounts</h1>
+            <p class="small" style="margin:0">Officers can manage drivers. Admins can also manage staff.</p>
+          </div>
+          <span class="spacer"></span>
+          <button id="add-btn">+ Add staff member</button>
+        </div>
+        <div class="table-wrap">
+          <table class="cards">
+            <thead><tr><th>Name</th><th>Role</th><th>Access</th><th>Last sign-in</th><th></th></tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside class="card">
+        <h2>Account activity</h2>
+        <ul class="audit" id="log"></ul>
+      </aside>
+    </div>
+  </main>
+
+  <dialog id="add-dialog">
+    <form id="add-form">
+      <h2>Add staff member</h2>
+      <div class="stack">
+        <div><label for="s-name">Full name</label><input id="s-name" name="full_name" required></div>
+        <div><label for="s-email">Work email</label><input id="s-email" name="email" type="email" required></div>
+        <div>
+          <label for="s-role">Role</label>
+          <select id="s-role" name="role">
+            <option value="officer">Officer: manage drivers</option>
+            <option value="admin">Admin: manage drivers and staff</option>
+          </select>
+        </div>
+      </div>
+      <p class="small">A temporary password will be generated. They'll be asked to choose their own when they first sign in.</p>
+      <p class="error" id="add-error"></p>
+      <div class="dialog-actions">
+        <button type="button" class="secondary" data-close>Cancel</button>
+        <button type="submit">Add</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="pw-dialog">
+    <h2 id="pw-title">Temporary password</h2>
+    <p id="pw-intro"></p>
+    <div class="temp-password" id="pw-value"></div>
+    <p class="small">Give this to them securely, e.g. in person or by phone rather than email. It won't be shown again. They'll choose their own password when they sign in.</p>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="pw-copy">Copy</button>
+      <button type="button" data-close>Done</button>
+    </div>
+  </dialog>
+
+  <div class="toast" id="toast"></div>
+  <script src="/app.js"></script>
+  <script>
+    let users = [], me = null;
+
+    async function load() {
+      const data = await api('/api/admin/staff');
+      users = data.users; me = data.me;
+      render();
+      $('log').innerHTML = data.log.map(l => `
+        <li><strong>${esc(l.target_name)}</strong><br>${esc(l.detail)}
+        <time>${fmtDateTime(l.created_at)} · by ${esc(l.actor_name || 'system')}</time></li>`).join('')
+        || '<li class="small">No activity yet.</li>';
+    }
+
+    function render() {
+      $('rows').innerHTML = users.map(u => {
+        const self = u.id === me;
+        return `
+        <tr class="${u.is_active ? '' : 'is-revoked'}">
+          <td class="card-title"><span class="name"><strong>${esc(u.full_name)}</strong>${self ? ' <span class="pill public">You</span>' : ''}</span>
+              <span class="sub">${esc(u.email)}</span></td>
+          <td data-label="Role">
+            <select class="role-select" data-id="${u.id}" ${self ? 'disabled' : ''} aria-label="Role for ${esc(u.full_name)}">
+              <option value="officer" ${u.role === 'officer' ? 'selected' : ''}>Officer</option>
+              <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option>
+            </select>
+          </td>
+          <td data-label="Access">${u.is_active
+                ? (u.must_change_password ? '<span class="pill warn">Awaiting first sign-in</span>' : '<span class="pill public">Active</span>')
+                : '<span class="pill hidden">Deactivated</span>'}</td>
+          <td data-label="Last sign-in">${u.last_login_at ? fmtDateTime(u.last_login_at) : '<span class="small">Never</span>'}</td>
+          <td class="actions actions-cell">${self ? '' : `
+            ${u.is_active ? `<button class="link" data-reset="${u.id}">Reset password</button>` : ''}
+            <button class="link" data-toggle="${u.id}">${u.is_active ? 'Deactivate' : 'Reactivate'}</button>`}
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    function showPassword(user, password, intro) {
+      $('pw-intro').innerHTML = intro;
+      $('pw-value').textContent = password;
+      $('pw-dialog').showModal();
+    }
+
+    $('rows').addEventListener('change', async e => {
+      const sel = e.target.closest('.role-select');
+      if (!sel) return;
+      const u = users.find(x => x.id == sel.dataset.id);
+      try {
+        await api(`/api/admin/staff/${u.id}`, { method: 'PATCH', body: JSON.stringify({ role: sel.value }) });
+        toast(`${u.full_name} is now ${sel.value === 'admin' ? 'an admin' : 'an officer'}`);
+        load();
+      } catch (err) { sel.value = u.role; toast(err.message); }
+    });
+
+    $('rows').addEventListener('click', async e => {
+      const { reset, toggle } = e.target.dataset;
+      const u = users.find(x => x.id == (reset || toggle));
+      if (!u) return;
+      try {
+        if (reset) {
+          if (!confirm(`Reset ${u.full_name}'s password?\n\nThey'll be signed out and need the new temporary password to get back in.`)) return;
+          const { temporary_password } = await api(`/api/admin/staff/${u.id}/reset-password`, { method: 'POST' });
+          showPassword(u, temporary_password, `New temporary password for <strong>${esc(u.full_name)}</strong>:`);
+        } else {
+          if (u.is_active && !confirm(`Deactivate ${u.full_name}?\n\nThey'll be signed out immediately and won't be able to sign in. Their past activity stays in the log.`)) return;
+          await api(`/api/admin/staff/${u.id}`, { method: 'PATCH', body: JSON.stringify({ is_active: !u.is_active }) });
+          toast(`${u.full_name} ${u.is_active ? 'deactivated' : 'reactivated'}`);
+        }
+        load();
+      } catch (err) { toast(err.message); }
+    });
+
+    $('add-btn').onclick = () => { $('add-form').reset(); $('add-error').textContent = ''; $('add-dialog').showModal(); };
+    document.querySelectorAll('[data-close]').forEach(b => b.onclick = () => b.closest('dialog').close());
+    $('pw-copy').onclick = async () => {
+      await navigator.clipboard.writeText($('pw-value').textContent);
+      toast('Copied');
+    };
+
+    $('add-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      try {
+        const body = Object.fromEntries(new FormData(e.target));
+        const { user, temporary_password } = await api('/api/admin/staff', { method: 'POST', body: JSON.stringify(body) });
+        $('add-dialog').close();
+        showPassword(user, temporary_password,
+          `<strong>${esc(user.full_name)}</strong> can now sign in as <strong>${esc(user.email)}</strong> with this temporary password:`);
+        load();
+      } catch (err) { $('add-error').textContent = err.message; }
+    });
+
+    initStaffPage('staff').then(load);
+  </script>
+</body>
+</html>

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Licensing First-time Setup</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="crest">DC</span> Licensing Team</div>
+  </header>
+  <main class="narrow">
+    <form id="setup" class="card stack auth-card">
+      <div>
+        <h1>First-time setup</h1>
+        <p class="small">Create the first admin account. Admins can add other licensing staff once signed in. This page disappears once an account exists.</p>
+      </div>
+      <div><label for="full_name">Your full name</label><input id="full_name" required autofocus></div>
+      <div><label for="email">Work email</label><input id="email" type="email" autocomplete="username" required></div>
+      <div>
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="new-password" minlength="10" required>
+        <p class="small">At least 10 characters.</p>
+      </div>
+      <div><label for="confirm">Confirm password</label><input id="confirm" type="password" autocomplete="new-password" required></div>
+      <button type="submit">Create admin account</button>
+      <p class="error" id="err"></p>
+    </form>
+  </main>
+  <script>
+    const v = id => document.getElementById(id).value;
+    document.getElementById('setup').addEventListener('submit', async e => {
+      e.preventDefault();
+      const err = document.getElementById('err');
+      if (v('password') !== v('confirm')) { err.textContent = 'Passwords do not match'; return; }
+      const res = await fetch('/api/setup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ full_name: v('full_name'), email: v('email'), password: v('password') })
+      });
+      if (res.ok) location.href = '/admin';
+      else err.textContent = (await res.json()).error;
+    });
+  </script>
+</body>
+</html>

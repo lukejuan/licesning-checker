@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>My Account</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar" id="topbar"></header>
+  <main class="narrow">
+    <div id="notice" class="notice" hidden>
+      <strong>Choose a new password to continue.</strong> You signed in with a temporary password, so you need to set your own before using the register.
+    </div>
+    <form id="pw" class="card stack auth-card">
+      <div>
+        <h1>Change password</h1>
+        <p class="small" id="whoami"></p>
+      </div>
+      <div><label for="current">Current (or temporary) password</label><input id="current" type="password" autocomplete="current-password" required></div>
+      <div>
+        <label for="new">New password</label>
+        <input id="new" type="password" autocomplete="new-password" minlength="10" required>
+        <p class="small">At least 10 characters. Changing it signs you out on other devices.</p>
+      </div>
+      <div><label for="confirm">Confirm new password</label><input id="confirm" type="password" autocomplete="new-password" required></div>
+      <button type="submit">Update password</button>
+      <p class="error" id="err"></p>
+    </form>
+  </main>
+  <div class="toast" id="toast"></div>
+  <script src="/app.js"></script>
+  <script>
+    let mustChange = false;
+    initStaffPage('account').then(user => {
+      mustChange = user.must_change_password;
+      $('notice').hidden = !mustChange;
+      $('whoami').textContent = `${user.full_name} · ${user.email}`;
+    });
+
+    $('pw').addEventListener('submit', async e => {
+      e.preventDefault();
+      $('err').textContent = '';
+      if ($('new').value !== $('confirm').value) { $('err').textContent = 'New passwords do not match'; return; }
+      try {
+        await api('/api/account/password', { method: 'POST', body: JSON.stringify({
+          current_password: $('current').value, new_password: $('new').value }) });
+        if (mustChange) { location.href = '/admin'; return; }
+        e.target.reset();
+        toast('Password updated');
+      } catch (err) { $('err').textContent = err.message; }
+    });
+  </script>
+</body>
+</html>

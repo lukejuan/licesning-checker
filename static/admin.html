@@ -3,25 +3,20 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Licensed Drivers Dashboard</title>
+  <title>Licensing Register</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand"><span class="crest">DC</span> Licensing Team · Driver Register</div>
-    <div class="row" style="align-items:center;gap:18px">
-      <a href="/" target="_blank">Public checker ↗</a>
-      <button class="link" id="logout">Sign out</button>
-    </div>
-  </header>
+  <header class="topbar" id="topbar"></header>
 
   <main>
+    <h1 id="page-title"></h1>
     <section class="stats" id="stats"></section>
 
     <div class="layout">
-      <section class="card">
+      <section class="card register">
         <div class="toolbar">
-          <input id="search" type="search" placeholder="Search name or licence number…">
+          <input id="search" type="search">
           <select id="filter">
             <option value="">All statuses</option>
             <option value="active">Active</option>
@@ -31,20 +26,12 @@
             <option value="expiring">Expiring ≤ 30 days</option>
           </select>
           <span class="spacer"></span>
-          <button id="add-btn">+ Add driver</button>
+          <a class="btn secondary" id="import-btn" hidden>Import spreadsheet</a>
+          <button id="add-btn"></button>
         </div>
         <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Driver</th>
-                <th>Type</th>
-                <th>Expiry</th>
-                <th>Status</th>
-                <th>Public checker</th>
-                <th></th>
-              </tr>
-            </thead>
+          <table class="cards">
+            <thead><tr id="head"></tr></thead>
             <tbody id="rows"></tbody>
           </table>
         </div>
@@ -57,19 +44,10 @@
     </div>
   </main>
 
-  <dialog id="driver-dialog">
-    <form id="driver-form" method="dialog">
-      <h2 id="dialog-title">Add driver</h2>
-      <div class="grid-2">
-        <div class="full"><label for="f-name">Full name</label><input id="f-name" name="full_name" required></div>
-        <div><label for="f-num">Licence number</label><input id="f-num" name="licence_number" required></div>
-        <div><label for="f-type">Licence type</label><select id="f-type" name="licence_type"></select></div>
-        <div><label for="f-exp">Expiry date</label><input id="f-exp" name="expiry_date" type="date" required></div>
-        <div><label for="f-status">Status</label><select id="f-status" name="status"></select></div>
-        <div><label for="f-phone">Phone</label><input id="f-phone" name="phone"></div>
-        <div><label for="f-email">Email</label><input id="f-email" name="email" type="email"></div>
-        <div class="full"><label for="f-notes">Internal notes</label><textarea id="f-notes" name="notes" rows="3"></textarea></div>
-      </div>
+  <dialog id="record-dialog">
+    <form id="record-form">
+      <h2 id="dialog-title"></h2>
+      <div class="grid-2" id="form-fields"></div>
       <p class="error" id="dialog-error"></p>
       <div class="dialog-actions">
         <button type="button" class="secondary" id="cancel">Cancel</button>
@@ -78,134 +56,309 @@
     </form>
   </dialog>
 
+  <dialog id="notify-dialog" class="small-dialog">
+    <h2>Notify the operator?</h2>
+    <p id="notify-question"></p>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="notify-no">No</button>
+      <button type="button" id="notify-yes">Yes</button>
+    </div>
+  </dialog>
+
+  <dialog id="email-dialog">
+    <div class="dialog-head">
+      <h2>Email to operator</h2>
+      <button type="button" id="email-copy">Click to copy</button>
+    </div>
+    <p class="small">Paste this into your email client. You can edit the text here before copying.</p>
+    <p class="notice-inline" id="email-warning" hidden></p>
+    <label for="email-text" class="visually-hidden">Email text</label>
+    <textarea id="email-text" rows="13"></textarea>
+    <div class="dialog-actions">
+      <button type="button" class="secondary" id="email-close">Close</button>
+    </div>
+  </dialog>
+
   <div class="toast" id="toast"></div>
 
+  <script src="/app.js"></script>
   <script>
-    let drivers = [], statuses = [], licenceTypes = [], editingId = null;
-    const $ = id => document.getElementById(id);
-    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-    const cap = s => s[0].toUpperCase() + s.slice(1);
     const fmtDate = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
     const daysUntil = iso => Math.ceil((new Date(iso + 'T00:00:00') - new Date().setHours(0,0,0,0)) / 86400000);
-    const isPublic = d => d.status === 'active' && !d.expired;
+    const expiryCell = iso => {
+      const days = daysUntil(iso);
+      const pill = days < 0 ? '<span class="pill bad">Expired</span>'
+        : days <= 30 ? `<span class="pill warn">${days} days left</span>` : '';
+      return `<span class="nowrap">${fmtDate(iso)}</span> ${pill}`;
+    };
 
-    function toast(msg) {
-      const t = $('toast'); t.textContent = msg; t.classList.add('show');
-      clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2600);
-    }
+    // Everything that differs between the drivers and vehicles registers.
+    const REGISTERS = {
+      drivers: {
+        title: 'Licensed drivers', singular: 'driver', total: 'Drivers on register',
+        search: 'Search name or licence number…',
+        name: d => d.full_name,
+        ref: d => d.licence_number,
+        emailSubject: d => `Driver ${d.full_name} (licence number ${d.licence_number})`,
+        searchText: d => [d.full_name, d.licence_number],
+        expiryFields: ['expiry_date'],
+        columns: [
+          ['Driver', d => `<span class="name"><strong>${esc(d.full_name)}</strong></span><span class="sub">${esc(d.licence_number)}</span>`],
+          ['Type', d => esc(d.licence_type)],
+          ['Licence expiry', d => expiryCell(d.expiry_date)],
+        ],
+        form: [
+          { name: 'full_name', label: 'Full name', required: true, full: true },
+          { name: 'licence_number', label: 'Licence / badge number', required: true },
+          { name: 'licence_type', label: 'Licence type', type: 'licence_type' },
+          { name: 'expiry_date', label: 'Licence expiry', type: 'date', required: true },
+          { name: 'status', label: 'Status', type: 'status' },
+          { name: 'phone', label: 'Phone' },
+          { name: 'email', label: 'Email', type: 'email' },
+          { name: 'notes', label: 'Internal notes', type: 'textarea', full: true },
+        ],
+      },
+      vehicles: {
+        title: 'Licensed vehicles', singular: 'vehicle', total: 'Vehicles on register',
+        search: 'Search reg, plate, make or proprietor…',
+        name: v => `${v.registration} (${v.make} ${v.model})`,
+        ref: v => `plate ${v.plate_number}`,
+        emailSubject: v => `Vehicle ${v.registration}, ${v.make} ${v.model} (plate ${v.plate_number})`,
+        searchText: v => [v.registration, v.plate_number, v.make, v.model, v.proprietor_name],
+        expiryFields: ['licence_expiry', 'test_expiry'],
+        columns: [
+          ['Vehicle', v => `<span class="name nowrap"><strong class="reg">${esc(v.registration)}</strong></span><span class="sub nowrap">Plate ${esc(v.plate_number)}</span>`],
+          ['Make &amp; model', v => `${esc(v.make)} ${esc(v.model)}<span class="sub">${[v.colour, v.licence_type].filter(Boolean).map(esc).join(' · ')}</span>`],
+          ['Proprietor', v => esc(v.proprietor_name)],
+          ['Licence expiry', v => expiryCell(v.licence_expiry)],
+          ['Test certificate expiry', v => expiryCell(v.test_expiry)],
+        ],
+        form: [
+          { name: 'registration', label: 'Registration', required: true },
+          { name: 'plate_number', label: 'Council plate number', required: true },
+          { name: 'make', label: 'Make', required: true },
+          { name: 'model', label: 'Model', required: true },
+          { name: 'colour', label: 'Colour' },
+          { name: 'licence_type', label: 'Licence type', type: 'licence_type' },
+          { name: 'proprietor_name', label: 'Proprietor name', required: true, full: true },
+          { name: 'licence_expiry', label: 'Licence expiry', type: 'date', required: true },
+          { name: 'test_expiry', label: 'Test certificate expiry', type: 'date', required: true },
+          { name: 'status', label: 'Status', type: 'status' },
+          { name: 'notes', label: 'Internal notes', type: 'textarea', full: true },
+        ],
+      },
+    };
 
-    async function api(url, opts = {}) {
-      const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
-      if (res.status === 401) { location.href = '/login'; throw new Error('signed out'); }
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Something went wrong');
-      return data;
-    }
+    const kind = location.pathname.endsWith('/vehicles') ? 'vehicles' : 'drivers';
+    const R = REGISTERS[kind];
+    const API = `/api/admin/${kind}`;
+    let records = [], statuses = [], licenceTypes = [], editingId = null;
+
+    const isPublic = r => r.status === 'active' && !r.expired;
+    const expiring = r => r.status === 'active' && !r.expired && R.expiryFields.some(f => daysUntil(r[f]) <= 30);
+
+    document.title = `${R.title} · Licensing Register`;
+    $('page-title').textContent = R.title;
+    $('search').placeholder = R.search;
+    $('add-btn').textContent = `+ Add ${R.singular}`;
+    $('head').innerHTML = [...R.columns.map(c => c[0]), 'Status', 'Public register', '']
+      .map(h => `<th>${h}</th>`).join('');
 
     async function load() {
-      const data = await api('/api/admin/drivers');
-      drivers = data.drivers; statuses = data.statuses; licenceTypes = data.licence_types;
-      render(); loadAudit();
+      const data = await api(API);
+      records = data.records; statuses = data.statuses; licenceTypes = data.licence_types;
+      render(); loadActivity();
     }
 
-    async function loadAudit() {
-      const { entries } = await api('/api/admin/audit');
+    async function loadActivity() {
+      const { entries } = await api(`${API}/activity`);
       $('audit').innerHTML = entries.map(e => `
-        <li><strong>${esc(e.full_name)}</strong> <span class="small">${esc(e.licence_number)}</span><br>
-        ${esc(e.detail)}<time>${new Date(e.created_at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}</time></li>
+        <li><strong>${esc(e.label)}</strong> <span class="small">${esc(e.sub)}</span><br>
+        ${esc(e.detail)}<time>${fmtDateTime(e.created_at)} · by ${esc(e.staff_name || 'system')}</time></li>
       `).join('') || '<li class="small">No activity yet.</li>';
     }
 
     function render() {
-      const count = f => drivers.filter(f).length;
-      const expiring = d => !d.expired && d.status === 'active' && daysUntil(d.expiry_date) <= 30;
+      const count = f => records.filter(f).length;
       $('stats').innerHTML = [
-        [drivers.length, 'Drivers on register'],
+        [records.length, R.total],
         [count(isPublic), 'Showing as licensed publicly'],
-        [count(d => d.status === 'suspended'), 'Suspended'],
+        [count(r => r.status === 'suspended'), 'Suspended'],
         [count(expiring), 'Expiring within 30 days'],
-        [count(d => d.expired && d.status === 'active'), 'Expired (needs renewal)'],
+        [count(r => r.expired && r.status === 'active'), 'Expired (needs renewal)'],
       ].map(([n, l]) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
 
-      const q = $('search').value.trim().toLowerCase();
+      // Ignore spaces and dashes so "gn66uyb" finds "GN66 UYB" and "phv0288" finds "PHV-0288".
+      const squash = t => (t || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const q = $('search').value.trim().toLowerCase(), qs = squash(q);
       const f = $('filter').value;
-      const rows = drivers.filter(d =>
-        (!q || d.full_name.toLowerCase().includes(q) || d.licence_number.toLowerCase().includes(q)) &&
-        (!f || (f === 'expired' ? d.expired : f === 'expiring' ? expiring(d) : d.status === f)));
+      const rows = records.filter(r =>
+        (!q || R.searchText(r).some(t => (t || '').toLowerCase().includes(q) || (qs && squash(t).includes(qs)))) &&
+        (!f || (f === 'expired' ? r.expired : f === 'expiring' ? expiring(r) : r.status === f)));
 
-      $('rows').innerHTML = rows.map(d => {
-        const days = daysUntil(d.expiry_date);
-        const expiryPill = d.expired ? '<span class="pill bad">Expired</span>'
-          : days <= 30 ? `<span class="pill warn">${days} days left</span>` : '';
-        return `
-        <tr class="is-${d.status}">
-          <td><span class="name"><strong>${esc(d.full_name)}</strong></span><span class="sub">${esc(d.licence_number)}</span></td>
-          <td>${esc(d.licence_type)}</td>
-          <td>${fmtDate(d.expiry_date)} ${expiryPill}</td>
-          <td>
-            <select class="status-select ${d.status}" data-id="${d.id}" aria-label="Status for ${esc(d.full_name)}">
-              ${statuses.map(s => `<option value="${s}" ${s === d.status ? 'selected' : ''}>${cap(s)}</option>`).join('')}
+      const colspan = R.columns.length + 3;
+      $('rows').innerHTML = rows.map(r => `
+        <tr class="is-${r.status}">
+          ${R.columns.map(([head, cell], i) => i === 0
+              ? `<td class="card-title">${cell(r)}</td>`
+              : `<td data-label="${head}"><div>${cell(r)}</div></td>`).join('')}
+          <td class="status-cell" data-label="Status">
+            <select class="status-select ${r.status}" data-id="${r.id}" aria-label="Status for ${esc(R.name(r))}">
+              ${statuses.map(s => `<option value="${s}" ${s === r.status ? 'selected' : ''}>${cap(s)}</option>`).join('')}
             </select>
           </td>
-          <td>${isPublic(d) ? '<span class="pill public">Visible</span>' : '<span class="pill hidden">Hidden</span>'}</td>
-          <td><button class="link" data-edit="${d.id}">Edit</button></td>
-        </tr>`;
-      }).join('') || '<tr><td colspan="6" class="small">No drivers match.</td></tr>';
+          <td data-label="Public register">${isPublic(r) ? '<span class="pill public">Visible</span>' : '<span class="pill hidden">Hidden</span>'}</td>
+          <td class="actions-cell"><button class="link" data-edit="${r.id}">Edit</button></td>
+        </tr>`).join('') || `<tr><td colspan="${colspan}" class="small">No ${R.singular}s match.</td></tr>`;
     }
 
-    // Status dropdown — the key action. Suspending/revoking hides the driver from the public checker immediately.
+    // Status dropdown: suspending or revoking hides the record from the public register immediately.
     $('rows').addEventListener('change', async e => {
       const sel = e.target.closest('.status-select');
       if (!sel) return;
-      const d = drivers.find(x => x.id == sel.dataset.id);
-      const next = sel.value;
-      if (next !== 'active' && !confirm(`${cap(next)} ${d.full_name} (${d.licence_number})?\n\nThey will no longer appear as licensed on the public checker.`)) {
-        sel.value = d.status; return;
+      const r = records.find(x => x.id == sel.dataset.id);
+      const next = sel.value, previous = r.status;
+      if (next !== 'active' && !confirm(`${cap(next)} ${R.name(r)}, ${R.ref(r)}?\n\nIt will no longer appear as licensed on the public register.`)) {
+        sel.value = r.status; return;
       }
       try {
-        const { driver } = await api(`/api/admin/drivers/${d.id}`, { method: 'PATCH', body: JSON.stringify({ status: next }) });
-        Object.assign(d, driver);
-        render(); loadAudit();
-        toast(`${d.full_name} is now ${next}` + (isPublic(d) ? ' — visible on public checker' : ' — hidden from public checker'));
-      } catch (err) { sel.value = d.status; toast(err.message); }
+        const { record } = await api(`${API}/${r.id}`, { method: 'PATCH', body: JSON.stringify({ status: next }) });
+        Object.assign(r, record);
+        render(); loadActivity();
+        toast(`${R.name(r)} is now ${next}` + (isPublic(r) ? ' — visible on public register' : ' — hidden from public register'));
+        offerOperatorEmail(r, previous);
+      } catch (err) { sel.value = r.status; toast(err.message); }
     });
 
-    // Add / edit dialog
-    function openDialog(d) {
-      editingId = d ? d.id : null;
-      $('dialog-title').textContent = d ? `Edit ${d.full_name}` : 'Add driver';
-      $('f-type').innerHTML = licenceTypes.map(t => `<option>${esc(t)}</option>`).join('');
-      $('f-status').innerHTML = statuses.map(s => `<option value="${s}">${cap(s)}</option>`).join('');
-      const form = $('driver-form');
-      form.reset();
-      for (const el of form.elements) if (el.name) el.value = d ? (d[el.name] ?? '') : el.value;
+    // After a suspension, revocation or reinstatement, offer a ready-made email for the operator.
+    const EXPIRY_NAMES = { expiry_date: 'licence', licence_expiry: 'licence', test_expiry: 'test certificate' };
+    let emailRecord = null, emailPrevious = null;
+
+    const isRestriction = r => r.status === 'suspended' || r.status === 'revoked';
+    const isReinstatement = (r, previous) =>
+      r.status === 'active' && (previous === 'suspended' || previous === 'revoked');
+    const reinstatedWord = previous => previous === 'revoked' ? 'reinstated' : 'unsuspended';
+
+    function offerOperatorEmail(r, previous) {
+      if (!isRestriction(r) && !isReinstatement(r, previous)) return;
+      emailRecord = { ...r };
+      emailPrevious = previous;
+      const what = isRestriction(r) ? r.status : `${reinstatedWord(previous)} (now Active)`;
+      $('notify-question').textContent =
+        `${R.name(r)} has been ${what}. Do you want to notify the operator via email?`;
+      $('notify-dialog').showModal();
+    }
+
+    function operatorEmail(r, previous) {
+      if (isRestriction(r)) return `Dear Operator,
+
+Please note that ${R.emailSubject(r)} has been ${r.status} with immediate effect.
+
+Please do not allow any bookings to be taken by this ${R.singular} until further notice.
+
+If you have any questions, please reach out to our Licensing Team.
+
+This ${R.singular} has been removed from our public register.
+
+Kind regards,
+Licensing Team`;
+      // An expired licence or test certificate keeps it hidden, so don't claim it's visible.
+      const registerLine = r.expired
+        ? `This ${R.singular} will be visible on our public register once its ${lapsedNames(r)} has been renewed.`
+        : `This ${R.singular} is now visible on our public register.`;
+      return `Dear Operator,
+
+${R.emailSubject(r)} has now been ${reinstatedWord(previous)}.
+
+${registerLine}
+
+Kind regards,
+Licensing Team`;
+    }
+
+    // Reactivating doesn't help if a date has lapsed: it stays off the public register.
+    const lapsedNames = r => R.expiryFields.filter(f => daysUntil(r[f]) < 0).map(f => EXPIRY_NAMES[f]).join(' and ');
+
+    function expiryWarning(r) {
+      if (isRestriction(r) || !r.expired) return '';
+      return `Check before sending: this ${R.singular}'s ${lapsedNames(r)} has expired, so the ${R.singular} is still hidden from the public register and shouldn't take bookings until it's renewed.`;
+    }
+
+    $('notify-no').onclick = () => $('notify-dialog').close();
+    $('notify-yes').onclick = () => {
+      $('notify-dialog').close();
+      $('email-text').value = operatorEmail(emailRecord, emailPrevious);
+      $('email-warning').textContent = expiryWarning(emailRecord);
+      $('email-warning').hidden = !$('email-warning').textContent;
+      $('email-copy').textContent = 'Click to copy';
+      $('email-dialog').showModal();
+    };
+    $('email-close').onclick = () => $('email-dialog').close();
+    $('email-copy').onclick = async () => {
+      const box = $('email-text');
+      // Copying the selected text works instantly in every browser; the newer
+      // clipboard API is the fallback because some browsers hold it behind a prompt.
+      box.select();
+      let copied = false;
+      try { copied = document.execCommand('copy'); } catch { /* not supported */ }
+      if (!copied) {
+        try { await navigator.clipboard.writeText(box.value); copied = true; } catch { /* blocked */ }
+      }
+      box.setSelectionRange(0, 0);
+      $('email-copy').textContent = copied ? 'Copied ✓' : 'Press Ctrl+C / ⌘C to copy';
+      if (!copied) box.select();
+      setTimeout(() => { $('email-copy').textContent = 'Click to copy'; }, 3000);
+    };
+
+    // Add / edit dialog, built from the register's form definition.
+    function fieldHtml(f) {
+      const id = `f-${f.name}`;
+      const attrs = `id="${id}" name="${f.name}" ${f.required ? 'required' : ''}`;
+      const input =
+        f.type === 'textarea' ? `<textarea ${attrs} rows="3"></textarea>` :
+        f.type === 'licence_type' ? `<select ${attrs}>${licenceTypes.map(t => `<option>${esc(t)}</option>`).join('')}</select>` :
+        f.type === 'status' ? `<select ${attrs}>${statuses.map(s => `<option value="${s}">${cap(s)}</option>`).join('')}</select>` :
+        `<input ${attrs} type="${f.type || 'text'}">`;
+      return `<div class="${f.full ? 'full' : ''}"><label for="${id}">${f.label}</label>${input}</div>`;
+    }
+
+    function openDialog(r) {
+      editingId = r ? r.id : null;
+      $('dialog-title').textContent = r ? `Edit ${R.name(r)}` : `Add ${R.singular}`;
+      $('form-fields').innerHTML = R.form.map(fieldHtml).join('');
+      if (r) for (const el of $('record-form').elements) if (el.name) el.value = r[el.name] ?? '';
       $('dialog-error').textContent = '';
-      $('driver-dialog').showModal();
+      $('record-dialog').showModal();
     }
     $('add-btn').onclick = () => openDialog(null);
     $('rows').addEventListener('click', e => {
       const id = e.target.dataset.edit;
-      if (id) openDialog(drivers.find(d => d.id == id));
+      if (id) openDialog(records.find(r => r.id == id));
     });
-    $('cancel').onclick = () => $('driver-dialog').close();
+    $('cancel').onclick = () => $('record-dialog').close();
 
-    $('driver-form').addEventListener('submit', async e => {
+    $('record-form').addEventListener('submit', async e => {
       e.preventDefault();
-      const body = Object.fromEntries(new FormData(e.target));
+      const body = JSON.stringify(Object.fromEntries(new FormData(e.target)));
+      const previousStatus = editingId ? records.find(r => r.id === editingId).status : null;
       try {
-        if (editingId) await api(`/api/admin/drivers/${editingId}`, { method: 'PATCH', body: JSON.stringify(body) });
-        else await api('/api/admin/drivers', { method: 'POST', body: JSON.stringify(body) });
-        $('driver-dialog').close();
-        toast(editingId ? 'Driver updated' : 'Driver added');
+        const { record } = editingId
+          ? await api(`${API}/${editingId}`, { method: 'PATCH', body })
+          : await api(API, { method: 'POST', body });
+        $('record-dialog').close();
+        toast(`${cap(R.singular)} ${editingId ? 'updated' : 'added'}`);
+        if (editingId && record.status !== previousStatus) offerOperatorEmail(record, previousStatus);
         load();
       } catch (err) { $('dialog-error').textContent = err.message; }
     });
 
     $('search').oninput = render;
     $('filter').onchange = render;
-    $('logout').onclick = async () => { await fetch('/api/logout', { method: 'POST' }); location.href = '/login'; };
-
-    load();
+    initStaffPage(kind).then(user => {
+      $('import-btn').href = `/admin/${kind}/import`;
+      $('import-btn').hidden = user.role !== 'admin';
+      load();
+    });
   </script>
 </body>
 </html>

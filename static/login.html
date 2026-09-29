@@ -12,14 +12,19 @@
     <a href="/">Public checker</a>
   </header>
   <main class="narrow">
-    <form id="login" class="card stack" style="max-width:400px;margin:40px auto">
+    <form id="login" class="card stack auth-card">
       <h1>Staff sign-in</h1>
       <div>
+        <label for="email">Work email</label>
+        <input id="email" type="email" autocomplete="username" required autofocus>
+      </div>
+      <div>
         <label for="password">Password</label>
-        <input id="password" type="password" autocomplete="current-password" required autofocus>
+        <input id="password" type="password" autocomplete="current-password" required>
       </div>
       <button type="submit">Sign in</button>
       <p class="error" id="err"></p>
+      <p class="small">Forgotten your password? Ask a licensing admin to reset it.</p>
     </form>
   </main>
   <script>
@@ -27,10 +32,14 @@
       e.preventDefault();
       const res = await fetch('/api/login', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: document.getElementById('password').value })
+        body: JSON.stringify({
+          email: document.getElementById('email').value,
+          password: document.getElementById('password').value,
+        })
       });
-      if (res.ok) location.href = '/admin';
-      else document.getElementById('err').textContent = (await res.json()).error;
+      const data = await res.json();
+      if (res.ok) location.href = data.must_change_password ? '/account' : '/admin';
+      else document.getElementById('err').textContent = data.error;
     });
   </script>
 </body>

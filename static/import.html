@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Import Spreadsheet</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar" id="topbar"></header>
+
+  <main class="import">
+    <p class="small"><a id="back-link" href="/admin">← Back to register</a></p>
+    <h1 id="page-title"></h1>
+
+    <!-- Step 1: choose a file -->
+    <section class="card stack" id="step-file">
+      <div>
+        <h2>1. Choose your spreadsheet</h2>
+        <p class="small">Save your existing register as a CSV file first. In Excel, choose <strong>File → Save As</strong> and pick <strong>CSV UTF-8</strong>. In Google Sheets, choose <strong>File → Download → CSV</strong>.</p>
+      </div>
+      <label class="dropzone" id="dropzone" for="file">
+        <input id="file" type="file" accept=".csv,.txt,text/csv">
+        <strong>Drop a CSV file here</strong> or click to choose one
+        <span class="small">Up to 5,000 rows. Nothing is saved until you confirm.</span>
+      </label>
+      <p class="error" id="file-error"></p>
+      <details class="small">
+        <summary>What can the file contain?</summary>
+        <p>Your column names don't need to match ours: we recognise common ones like "Badge No", "Surname", "VRM" or "MOT due", and you can correct anything we get wrong. Title rows above the headers, blank rows, UK dates such as <code>31/03/2027</code> or <code>1st March 2027</code>, and short licence types like "PH" or "HC" are all fine.</p>
+        <p>Want a clean starting point? <a id="template-link" href="#">Download a template</a>.</p>
+      </details>
+    </section>
+
+    <!-- Step 2: check columns and preview -->
+    <section id="step-preview" hidden>
+      <div class="card stack">
+        <div class="row-between">
+          <div>
+            <h2>2. Check the columns</h2>
+            <p class="small" id="file-summary"></p>
+          </div>
+          <button class="secondary" id="change-file">Choose a different file</button>
+        </div>
+        <div class="table-wrap">
+          <table class="mapping cards">
+            <thead><tr><th>Register field</th><th>Column in your file</th><th>Example from first row</th></tr></thead>
+            <tbody id="mapping-rows"></tbody>
+          </table>
+        </div>
+        <div class="options">
+          <label class="check"><input type="checkbox" id="opt-update"> <span id="opt-update-label"></span></label>
+          <div class="inline-field">
+            <label for="opt-type">If a row has no licence type, use</label>
+            <select id="opt-type"></select>
+          </div>
+        </div>
+      </div>
+
+      <div class="card stack" style="margin-top:20px">
+        <h2>3. Review and import</h2>
+        <div class="summary" id="summary"></div>
+        <div class="filters" id="filters"></div>
+        <div class="table-wrap">
+          <table class="preview cards">
+            <thead><tr><th>Row</th><th>Result</th><th id="col-main"></th><th>Details</th></tr></thead>
+            <tbody id="preview-rows"></tbody>
+          </table>
+        </div>
+        <p class="small" id="preview-more"></p>
+        <div class="row-between">
+          <p class="small">Rows with problems are left out. You can download them after importing, fix them and import them again.</p>
+          <button id="import-btn" disabled>Import</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Step 4: done -->
+    <section class="card stack" id="step-done" hidden>
+      <h2>Import complete</h2>
+      <p id="done-summary"></p>
+      <div id="done-failed" hidden>
+        <p><strong id="done-failed-count"></strong> couldn't be imported. Download them with the reason for each, fix them in your spreadsheet and import that file.</p>
+        <button class="secondary" id="download-failed">Download rows that weren't imported</button>
+      </div>
+      <p><a class="btn" id="done-link" href="/admin">Go to the register</a></p>
+    </section>
+  </main>
+
+  <div class="toast" id="toast"></div>
+  <script src="/app.js"></script>
+  <script>
+    const kind = location.pathname.split('/')[2];
+    const WORDS = {
+      drivers: { title: 'Import drivers', singular: 'driver', plural: 'drivers', back: '/admin',
+                 main: 'Driver', label: v => v.full_name, ref: v => v.licence_number },
+      vehicles: { title: 'Import vehicles', singular: 'vehicle', plural: 'vehicles', back: '/admin/vehicles',
+                  main: 'Vehicle', label: v => v.registration, ref: v => [v.make, v.model].filter(Boolean).join(' ') },
+    }[kind];
+    // [row label, pill colour, summary wording for n rows]
+    const ACTIONS = {
+      new: ['New', 'public', n => `${n} new`],
+      update: ['Update', 'info', n => `${n} ${n === 1 ? 'update' : 'updates'}`],
+      unchanged: ['Already up to date', 'hidden', n => `${n} already up to date`],
+      skip: ['Skipped: already on register', 'hidden', n => `${n} skipped (already on the register)`],
+      error: ['Problem', 'bad', n => `${n} ${n === 1 ? 'problem' : 'problems'}`],
+    };
+    const PREVIEW_LIMIT = 200;
+
+    let csvText = '', filename = '', preview = null, mapping = null, filter = 'all', failedCsv = '';
+
+    document.title = `${WORDS.title} · Licensing Register`;
+    $('page-title').textContent = WORDS.title;
+    $('back-link').href = $('done-link').href = WORDS.back;
+    $('template-link').href = `/api/admin/${kind}/import/template`;
+    $('col-main').textContent = WORDS.main;
+    $('opt-update-label').textContent = `Update ${WORDS.plural} that are already on the register (matched by ${kind === 'drivers' ? 'licence number' : 'registration or plate number'})`;
+
+    // Excel on Windows often saves "CSV" as Windows-1252 rather than UTF-8.
+    async function readFile(file) {
+      const buf = await file.arrayBuffer();
+      try { return new TextDecoder('utf-8', { fatal: true }).decode(buf); }
+      catch { return new TextDecoder('windows-1252').decode(buf); }
+    }
+
+    async function chooseFile(file) {
+      $('file-error').textContent = '';
+      if (!file) return;
+      if (file.size > 5_000_000) { $('file-error').textContent = 'That file is too large (5 MB maximum).'; return; }
+      if (/\.xlsx?$/i.test(file.name)) {
+        $('file-error').textContent = 'That looks like an Excel file. Save it as CSV first (File → Save As → CSV UTF-8).'; return;
+      }
+      csvText = await readFile(file);
+      filename = file.name;
+      mapping = null;
+      try { await runPreview(); } catch (err) { $('file-error').textContent = err.message; }
+    }
+
+    function options() {
+      return { update_existing: $('opt-update').checked, default_licence_type: $('opt-type').value || null };
+    }
+
+    async function runPreview() {
+      preview = await api(`/api/admin/${kind}/import/preview`, {
+        method: 'POST', body: JSON.stringify({ csv: csvText, mapping, options: options() }) });
+      mapping = preview.mapping;
+      $('step-file').hidden = true;
+      $('step-preview').hidden = false;
+      renderMapping(); renderPreview();
+    }
+
+    function renderMapping() {
+      const p = preview;
+      const dataRows = p.rows.length;
+      $('file-summary').textContent = `${filename}: headers found on row ${p.header_row}, ${dataRows} ${dataRows === 1 ? 'row' : 'rows'} of data. Check each field is matched to the right column.`;
+      $('mapping-rows').innerHTML = p.fields.map(([field, label]) => {
+        const col = p.mapping[field];
+        const options = ['<option value="">— not in my file —</option>',
+          ...p.headers.map((h, i) => `<option value="${i}" ${i === col ? 'selected' : ''}>${esc(h || `Column ${i + 1}`)}</option>`)].join('');
+        return `<tr class="${col === undefined ? 'unmapped' : ''}">
+          <td class="card-title">${esc(label)}</td>
+          <td class="field-cell"><select data-field="${field}" aria-label="Column for ${esc(label)}">${options}</select></td>
+          <td class="small" data-label="Example">${col === undefined ? '—' : esc(p.sample[col] || '—')}</td>
+        </tr>`;
+      }).join('');
+      if (!$('opt-type').options.length) {
+        $('opt-type').innerHTML = '<option value="">— mark the row as a problem —</option>' +
+          p.licence_types.map(t => `<option>${esc(t)}</option>`).join('');
+      }
+    }
+
+    function renderPreview() {
+      const c = preview.counts;
+      const pill = (n, action) => n ? `<span class="pill ${ACTIONS[action][1]}">${ACTIONS[action][2](n)}</span>` : '';
+      $('summary').innerHTML = [pill(c.new, 'new'), pill(c.update, 'update'), pill(c.unchanged, 'unchanged'),
+        pill(c.skip, 'skip'), pill(c.error, 'error')].join(' ') || '<span class="small">No rows found.</span>';
+
+      const warnings = preview.rows.filter(r => r.warnings.length && r.action !== 'error').length;
+      const tabs = [['all', 'All rows', preview.rows.length], ['new', 'New', c.new], ['update', 'Updates', c.update],
+                    ['error', 'Problems', c.error], ['warning', 'Warnings', warnings]];
+      $('filters').innerHTML = tabs.filter(([key, , n]) => key === 'all' || n)
+        .map(([key, label, n]) => `<button class="filter ${filter === key ? 'current' : ''}" data-filter="${key}">${label} (${n})</button>`).join('');
+
+      const rows = preview.rows.filter(r => filter === 'all' ? true
+        : filter === 'warning' ? r.warnings.length && r.action !== 'error' : r.action === filter);
+      $('preview-rows').innerHTML = rows.slice(0, PREVIEW_LIMIT).map(r => {
+        const [label, cls] = ACTIONS[r.action];
+        const details = [
+          ...r.errors.map(e => `<div class="msg bad">${esc(e)}</div>`),
+          ...(r.changes && r.changes.length ? [`<div class="msg">Changes: ${esc(r.changes.join(', '))}</div>`] : []),
+          ...r.warnings.map(w => `<div class="msg warn">${esc(w)}</div>`),
+        ].join('');
+        return `<tr>
+          <td data-label="Row">${r.row}</td>
+          <td data-label="Result"><span class="pill ${cls}">${label}</span></td>
+          <td class="card-title"><strong>${esc(WORDS.label(r.values) || '—')}</strong><span class="sub">${esc(WORDS.ref(r.values) || '')}</span></td>
+          <td class="details-cell">${details}</td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="4" class="small">No rows.</td></tr>';
+      $('preview-more').textContent = rows.length > PREVIEW_LIMIT ? `Showing the first ${PREVIEW_LIMIT} of ${rows.length} rows.` : '';
+
+      const total = c.new + c.update;
+      $('import-btn').disabled = !total;
+      $('import-btn').textContent = total
+        ? `Import ${[c.new && `${c.new} new`, c.update && `${c.update} ${c.update === 1 ? 'update' : 'updates'}`].filter(Boolean).join(' and ')}`
+        : 'Nothing to import';
+    }
+
+    // Wiring
+    $('file').onchange = e => chooseFile(e.target.files[0]);
+    const dz = $('dropzone');
+    dz.ondragover = e => { e.preventDefault(); dz.classList.add('over'); };
+    dz.ondragleave = () => dz.classList.remove('over');
+    dz.ondrop = e => { e.preventDefault(); dz.classList.remove('over'); chooseFile(e.dataTransfer.files[0]); };
+
+    $('change-file').onclick = () => {
+      $('file').value = ''; $('step-preview').hidden = true; $('step-file').hidden = false;
+    };
+    $('mapping-rows').addEventListener('change', async e => {
+      const field = e.target.dataset.field;
+      if (!field) return;
+      if (e.target.value === '') delete mapping[field]; else mapping[field] = +e.target.value;
+      runPreview().catch(err => toast(err.message));
+    });
+    $('opt-update').onchange = $('opt-type').onchange = () => runPreview().catch(err => toast(err.message));
+    $('filters').addEventListener('click', e => {
+      if (e.target.dataset.filter) { filter = e.target.dataset.filter; renderPreview(); }
+    });
+
+    $('import-btn').onclick = async () => {
+      const c = preview.counts;
+      if (!confirm(`${$('import-btn').textContent}?\n\nThis changes the live register. Active, in-date records will appear on the public register straight away.`)) return;
+      $('import-btn').disabled = true;
+      try {
+        const result = await api(`/api/admin/${kind}/import/commit`, {
+          method: 'POST', body: JSON.stringify({ csv: csvText, mapping, options: options(), filename }) });
+        const r = result.counts;
+        $('done-summary').textContent = `Added ${r.new} new ${r.new === 1 ? WORDS.singular : WORDS.plural}` +
+          ` and updated ${r.update}.` + (r.unchanged ? ` ${r.unchanged} ${r.unchanged === 1 ? 'was' : 'were'} already up to date.` : '') +
+          (r.skip ? ` ${r.skip} already on the register ${r.skip === 1 ? 'was' : 'were'} left unchanged.` : '') +
+          ' Each change is recorded in the activity log.';
+        failedCsv = result.failed_csv;
+        $('done-failed').hidden = !r.error;
+        $('done-failed-count').textContent = `${r.error} ${r.error === 1 ? 'row' : 'rows'}`;
+        $('step-preview').hidden = true;
+        $('step-done').hidden = false;
+      } catch (err) { toast(err.message); $('import-btn').disabled = false; }
+    };
+
+    $('download-failed').onclick = () => {
+      const url = URL.createObjectURL(new Blob(['﻿' + failedCsv], { type: 'text/csv' }));
+      const a = Object.assign(document.createElement('a'), { href: url, download: `${kind}-not-imported.csv` });
+      a.click(); URL.revokeObjectURL(url);
+    };
+
+    initStaffPage(kind);
+  </script>
+</body>
+</html>
