@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Licensing Staff Sign-in</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="crest">DC</span> Licensing Team</div>
+    <a href="/">Public checker</a>
+  </header>
+  <main class="narrow">
+    <form id="login" class="card stack" style="max-width:400px;margin:40px auto">
+      <h1>Staff sign-in</h1>
+      <div>
+        <label for="password">Password</label>
+        <input id="password" type="password" autocomplete="current-password" required autofocus>
+      </div>
+      <button type="submit">Sign in</button>
+      <p class="error" id="err"></p>
+    </form>
+  </main>
+  <script>
+    document.getElementById('login').addEventListener('submit', async e => {
+      e.preventDefault();
+      const res = await fetch('/api/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: document.getElementById('password').value })
+      });
+      if (res.ok) location.href = '/admin';
+      else document.getElementById('err').textContent = (await res.json()).error;
+    });
+  </script>
+</body>
+</html>

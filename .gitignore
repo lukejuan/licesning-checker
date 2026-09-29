@@ -1,0 +1,4 @@
+# Local database (holds driver records; recreated with sample data on first run)
+drivers.db
+__pycache__/
+.DS_Store

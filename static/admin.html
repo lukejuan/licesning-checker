@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Licensed Drivers Dashboard</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="crest">DC</span> Licensing Team · Driver Register</div>
+    <div class="row" style="align-items:center;gap:18px">
+      <a href="/" target="_blank">Public checker ↗</a>
+      <button class="link" id="logout">Sign out</button>
+    </div>
+  </header>
+
+  <main>
+    <section class="stats" id="stats"></section>
+
+    <div class="layout">
+      <section class="card">
+        <div class="toolbar">
+          <input id="search" type="search" placeholder="Search name or licence number…">
+          <select id="filter">
+            <option value="">All statuses</option>
+            <option value="active">Active</option>
+            <option value="suspended">Suspended</option>
+            <option value="revoked">Revoked</option>
+            <option value="expired">Expired</option>
+            <option value="expiring">Expiring ≤ 30 days</option>
+          </select>
+          <span class="spacer"></span>
+          <button id="add-btn">+ Add driver</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Driver</th>
+                <th>Type</th>
+                <th>Expiry</th>
+                <th>Status</th>
+                <th>Public checker</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <aside class="card">
+        <h2>Recent activity</h2>
+        <ul class="audit" id="audit"></ul>
+      </aside>
+    </div>
+  </main>
+
+  <dialog id="driver-dialog">
+    <form id="driver-form" method="dialog">
+      <h2 id="dialog-title">Add driver</h2>
+      <div class="grid-2">
+        <div class="full"><label for="f-name">Full name</label><input id="f-name" name="full_name" required></div>
+        <div><label for="f-num">Licence number</label><input id="f-num" name="licence_number" required></div>
+        <div><label for="f-type">Licence type</label><select id="f-type" name="licence_type"></select></div>
+        <div><label for="f-exp">Expiry date</label><input id="f-exp" name="expiry_date" type="date" required></div>
+        <div><label for="f-status">Status</label><select id="f-status" name="status"></select></div>
+        <div><label for="f-phone">Phone</label><input id="f-phone" name="phone"></div>
+        <div><label for="f-email">Email</label><input id="f-email" name="email" type="email"></div>
+        <div class="full"><label for="f-notes">Internal notes</label><textarea id="f-notes" name="notes" rows="3"></textarea></div>
+      </div>
+      <p class="error" id="dialog-error"></p>
+      <div class="dialog-actions">
+        <button type="button" class="secondary" id="cancel">Cancel</button>
+        <button type="submit">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    let drivers = [], statuses = [], licenceTypes = [], editingId = null;
+    const $ = id => document.getElementById(id);
+    const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const cap = s => s[0].toUpperCase() + s.slice(1);
+    const fmtDate = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    const daysUntil = iso => Math.ceil((new Date(iso + 'T00:00:00') - new Date().setHours(0,0,0,0)) / 86400000);
+    const isPublic = d => d.status === 'active' && !d.expired;
+
+    function toast(msg) {
+      const t = $('toast'); t.textContent = msg; t.classList.add('show');
+      clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2600);
+    }
+
+    async function api(url, opts = {}) {
+      const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+      if (res.status === 401) { location.href = '/login'; throw new Error('signed out'); }
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Something went wrong');
+      return data;
+    }
+
+    async function load() {
+      const data = await api('/api/admin/drivers');
+      drivers = data.drivers; statuses = data.statuses; licenceTypes = data.licence_types;
+      render(); loadAudit();
+    }
+
+    async function loadAudit() {
+      const { entries } = await api('/api/admin/audit');
+      $('audit').innerHTML = entries.map(e => `
+        <li><strong>${esc(e.full_name)}</strong> <span class="small">${esc(e.licence_number)}</span><br>
+        ${esc(e.detail)}<time>${new Date(e.created_at).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })}</time></li>
+      `).join('') || '<li class="small">No activity yet.</li>';
+    }
+
+    function render() {
+      const count = f => drivers.filter(f).length;
+      const expiring = d => !d.expired && d.status === 'active' && daysUntil(d.expiry_date) <= 30;
+      $('stats').innerHTML = [
+        [drivers.length, 'Drivers on register'],
+        [count(isPublic), 'Showing as licensed publicly'],
+        [count(d => d.status === 'suspended'), 'Suspended'],
+        [count(expiring), 'Expiring within 30 days'],
+        [count(d => d.expired && d.status === 'active'), 'Expired (needs renewal)'],
+      ].map(([n, l]) => `<div class="stat"><div class="n">${n}</div><div class="l">${l}</div></div>`).join('');
+
+      const q = $('search').value.trim().toLowerCase();
+      const f = $('filter').value;
+      const rows = drivers.filter(d =>
+        (!q || d.full_name.toLowerCase().includes(q) || d.licence_number.toLowerCase().includes(q)) &&
+        (!f || (f === 'expired' ? d.expired : f === 'expiring' ? expiring(d) : d.status === f)));
+
+      $('rows').innerHTML = rows.map(d => {
+        const days = daysUntil(d.expiry_date);
+        const expiryPill = d.expired ? '<span class="pill bad">Expired</span>'
+          : days <= 30 ? `<span class="pill warn">${days} days left</span>` : '';
+        return `
+        <tr class="is-${d.status}">
+          <td><span class="name"><strong>${esc(d.full_name)}</strong></span><span class="sub">${esc(d.licence_number)}</span></td>
+          <td>${esc(d.licence_type)}</td>
+          <td>${fmtDate(d.expiry_date)} ${expiryPill}</td>
+          <td>
+            <select class="status-select ${d.status}" data-id="${d.id}" aria-label="Status for ${esc(d.full_name)}">
+              ${statuses.map(s => `<option value="${s}" ${s === d.status ? 'selected' : ''}>${cap(s)}</option>`).join('')}
+            </select>
+          </td>
+          <td>${isPublic(d) ? '<span class="pill public">Visible</span>' : '<span class="pill hidden">Hidden</span>'}</td>
+          <td><button class="link" data-edit="${d.id}">Edit</button></td>
+        </tr>`;
+      }).join('') || '<tr><td colspan="6" class="small">No drivers match.</td></tr>';
+    }
+
+    // Status dropdown — the key action. Suspending/revoking hides the driver from the public checker immediately.
+    $('rows').addEventListener('change', async e => {
+      const sel = e.target.closest('.status-select');
+      if (!sel) return;
+      const d = drivers.find(x => x.id == sel.dataset.id);
+      const next = sel.value;
+      if (next !== 'active' && !confirm(`${cap(next)} ${d.full_name} (${d.licence_number})?\n\nThey will no longer appear as licensed on the public checker.`)) {
+        sel.value = d.status; return;
+      }
+      try {
+        const { driver } = await api(`/api/admin/drivers/${d.id}`, { method: 'PATCH', body: JSON.stringify({ status: next }) });
+        Object.assign(d, driver);
+        render(); loadAudit();
+        toast(`${d.full_name} is now ${next}` + (isPublic(d) ? ' — visible on public checker' : ' — hidden from public checker'));
+      } catch (err) { sel.value = d.status; toast(err.message); }
+    });
+
+    // Add / edit dialog
+    function openDialog(d) {
+      editingId = d ? d.id : null;
+      $('dialog-title').textContent = d ? `Edit ${d.full_name}` : 'Add driver';
+      $('f-type').innerHTML = licenceTypes.map(t => `<option>${esc(t)}</option>`).join('');
+      $('f-status').innerHTML = statuses.map(s => `<option value="${s}">${cap(s)}</option>`).join('');
+      const form = $('driver-form');
+      form.reset();
+      for (const el of form.elements) if (el.name) el.value = d ? (d[el.name] ?? '') : el.value;
+      $('dialog-error').textContent = '';
+      $('driver-dialog').showModal();
+    }
+    $('add-btn').onclick = () => openDialog(null);
+    $('rows').addEventListener('click', e => {
+      const id = e.target.dataset.edit;
+      if (id) openDialog(drivers.find(d => d.id == id));
+    });
+    $('cancel').onclick = () => $('driver-dialog').close();
+
+    $('driver-form').addEventListener('submit', async e => {
+      e.preventDefault();
+      const body = Object.fromEntries(new FormData(e.target));
+      try {
+        if (editingId) await api(`/api/admin/drivers/${editingId}`, { method: 'PATCH', body: JSON.stringify(body) });
+        else await api('/api/admin/drivers', { method: 'POST', body: JSON.stringify(body) });
+        $('driver-dialog').close();
+        toast(editingId ? 'Driver updated' : 'Driver added');
+        load();
+      } catch (err) { $('dialog-error').textContent = err.message; }
+    });
+
+    $('search').oninput = render;
+    $('filter').onchange = render;
+    $('logout').onclick = async () => { await fetch('/api/logout', { method: 'POST' }); location.href = '/login'; };
+
+    load();
+  </script>
+</body>
+</html>

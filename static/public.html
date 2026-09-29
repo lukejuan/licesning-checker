@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Driver Licence Checker</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="crest">DC</span> District Council · Taxi &amp; Private Hire Licensing</div>
+  </header>
+
+  <main class="narrow stack">
+    <div>
+      <h1>Check a driver's licence</h1>
+      <p class="lede">For operators and members of the public. Enter the licence number shown on the driver's badge to confirm they currently hold a valid licence with this council.</p>
+    </div>
+
+    <form id="check-form" class="card">
+      <label for="licence">Licence / badge number</label>
+      <div class="row">
+        <input id="licence" name="licence" placeholder="e.g. PH-10421" autocomplete="off" required>
+        <button type="submit">Check</button>
+      </div>
+      <p class="error" id="form-error"></p>
+    </form>
+
+    <div id="result" aria-live="polite"></div>
+
+    <p class="small">If a driver is not shown as licensed, do not allow them to carry passengers. Contact the licensing team if you believe this is an error.</p>
+  </main>
+
+  <script>
+    const form = document.getElementById('check-form');
+    const input = document.getElementById('licence');
+    const result = document.getElementById('result');
+    const formError = document.getElementById('form-error');
+
+    const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const fmtDate = iso => new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+    const fmtTime = iso => new Date(iso).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' });
+
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      formError.textContent = '';
+      result.innerHTML = '';
+      const res = await fetch('/api/public/check?licence=' + encodeURIComponent(input.value));
+      const data = await res.json();
+      if (!res.ok) { formError.textContent = data.error; return; }
+
+      if (data.licensed) {
+        const d = data.driver;
+        result.innerHTML = `
+          <div class="result ok">
+            <h2>✓ Licensed driver</h2>
+            <dl>
+              <dt>Name</dt><dd>${esc(d.full_name)}</dd>
+              <dt>Licence number</dt><dd>${esc(d.licence_number)}</dd>
+              <dt>Licence type</dt><dd>${esc(d.licence_type)}</dd>
+              <dt>Valid until</dt><dd>${fmtDate(d.expiry_date)}</dd>
+            </dl>
+            <p class="small">Checked ${fmtTime(data.checked_at)}</p>
+          </div>`;
+      } else {
+        result.innerHTML = `
+          <div class="result bad">
+            <h2>✗ No valid licence found</h2>
+            <p>There is no current licence for <strong>${esc(data.licence_number)}</strong>. Check the number has been entered correctly.</p>
+            <p class="small">Checked ${fmtTime(data.checked_at)}</p>
+          </div>`;
+      }
+    });
+  </script>
+</body>
+</html>
